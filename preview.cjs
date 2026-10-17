@@ -1,7 +1,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const files = new Set(['index.html','styles.css','app.js','data.js','favicon.svg']);
+const files = new Set(['index.html','styles.css','app.js','data.js','favicon.svg','editor-auth.js','editor-config.js']);
 const mime = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml'};
 http.createServer((req,res) => {
   const url = new URL(req.url,'http://localhost');
