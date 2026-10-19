@@ -2,6 +2,22 @@
   'use strict';
   const $ = s => document.querySelector(s);
   const key = 'little-drawer.collection.v1', favoriteKey = 'little-drawer.favorites.v1';
+  const passwordKey = 'little-drawer.editor-password.v1';
+  const deployedPassword = JSON.stringify(window.EDITOR_CONFIG);
+  let authEpoch = 0;
+  function editorConfig() {
+    let saved;
+    try { saved = localStorage.getItem(passwordKey); } catch { return window.EDITOR_CONFIG; }
+    if (!saved) return window.EDITOR_CONFIG;
+    const record = JSON.parse(saved);
+    // 새 설정 파일을 배포하면 이전 배포에서 변경한 로컬 비밀번호보다 우선합니다.
+    return record.base === deployedPassword ? EditorAuth.validateConfig(record.config) : window.EDITOR_CONFIG;
+  }
+  function endEditing() {
+    authEpoch++; admin = false;
+    document.querySelectorAll('dialog[open]').forEach(d => d.close());
+    render();
+  }
   const categories = ['3학년 수업', '수업', '업무'];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   function safeUrl(value) { try { const u = new URL(value); return ['https:','http:'].includes(u.protocol) ? u.href : null; } catch { return null; } }
@@ -91,21 +107,51 @@
   });
   $('#editor-form').addEventListener('submit',e=>{e.preventDefault();if(!admin)return;const f=e.target.elements;const title=f.title.value.trim();if(!title)return toast('이름을 입력해 주세요.');const id=f.id.value||crypto.randomUUID();if(f.kind.value==='folder'){const folder={id,name:title,category:f.category.value};const i=data.folders.findIndex(x=>x.id===id);i<0?data.folders.push(folder):data.folders.splice(i,1,folder);}else{const url=safeUrl(f.url.value);if(!url)return toast('http 또는 https 주소를 입력해 주세요.');const project={id,title,url,description:f.description.value.trim(),category:f.category.value,folder:f.folder.value};const i=data.projects.findIndex(x=>x.id===id);i<0?data.projects.push(project):data.projects.splice(i,1,project);}$('#editor').close();save();});
   $('#manage').onclick=()=>{
-    if(admin){admin=false;document.querySelectorAll('dialog[open]').forEach(d=>d.close());render();toast('편집을 종료했습니다. 뷰어 모드로 전환합니다.');return;}
+    if(admin){endEditing();toast('편집을 종료했습니다. 뷰어 모드로 전환합니다.');return;}
     $('#login-form').reset();$('#login-error').textContent='';$('#login-dialog').showModal();$('#editor-password').focus();
   };
   $('#login-form').addEventListener('submit',async e=>{
     e.preventDefault();const button=$('#login-submit');if(button.disabled)return;
-    const password=$('#editor-password').value;button.disabled=true;button.textContent='확인 중…';$('#login-error').textContent='';
+    const epoch=authEpoch;const password=$('#editor-password').value;button.disabled=true;button.textContent='확인 중…';$('#login-error').textContent='';
     try {
-      const valid=await EditorAuth.verify(password,window.EDITOR_CONFIG);
-      if(!$('#login-dialog').open)return;
+      const valid=await EditorAuth.verify(password,editorConfig());
+      if(!$('#login-dialog').open||epoch!==authEpoch)return;
       if(!valid){$('#login-error').textContent='비밀번호가 올바르지 않습니다.';$('#editor-password').value='';$('#editor-password').focus();return;}
       admin=true;$('#login-dialog').close();render();toast(storageAvailable?'편집자 모드입니다. 추가·수정·삭제할 수 있습니다.':'편집 후 JSON 백업을 내려받으세요. 브라우저 저장을 사용할 수 없습니다.');
     } catch(error){if($('#login-dialog').open)$('#login-error').textContent=error.message;}
     finally{button.disabled=false;button.textContent='편집 시작';}
   });
-  $('#login-dialog').addEventListener('close',()=>{$('#editor-password').value='';$('#login-error').textContent='';});
+  $('#login-dialog').addEventListener('close',()=>{authEpoch++;$('#editor-password').value='';$('#login-error').textContent='';});
+  $('#change-password').onclick=()=>{
+    if(!admin)return;
+    $('#password-form').reset();$('#password-error').textContent='';
+    $('#password-dialog').showModal();$('#current-password').focus();
+  };
+  $('#password-dialog').addEventListener('close',()=>{authEpoch++;$('#password-form').reset();$('#password-error').textContent='';});
+  $('#password-form').addEventListener('submit',async e=>{
+    e.preventDefault();if(!admin)return;
+    const button=$('#password-submit');if(button.disabled)return;
+    const epoch=authEpoch;
+    button.disabled=true;button.textContent='변경 중…';$('#password-error').textContent='';
+    try {
+      const before=editorConfig();
+      const config=await EditorAuth.changePassword($('#current-password').value,$('#new-password').value,$('#confirm-password').value,before);
+      if(!admin||!$('#password-dialog').open||epoch!==authEpoch)return;
+      if(JSON.stringify(before)!==JSON.stringify(editorConfig()))throw Error('다른 창에서 비밀번호가 변경되었습니다. 다시 로그인해 주세요.');
+      try {localStorage.setItem(passwordKey,JSON.stringify({base:deployedPassword,config}));}
+      catch {throw Error('브라우저에 저장할 수 없어 비밀번호를 변경하지 않았습니다. 저장소 설정을 확인해 주세요.');}
+      endEditing();toast('이 브라우저의 비밀번호를 변경했습니다. 새 비밀번호로 로그인해 주세요.');
+    } catch(error){if($('#password-dialog').open)$('#password-error').textContent=error.message;}
+    finally{button.disabled=false;button.textContent='비밀번호 변경';}
+  });
+  $('#export-password').onclick=()=>{
+    if(!admin)return;
+    try{download('editor-config.js','// 편집 화면 잠금 설정. 평문 비밀번호는 포함되지 않습니다.\nwindow.EDITOR_CONFIG = '+JSON.stringify(editorConfig(),null,2)+';\n','text/javascript;charset=utf-8');}
+    catch(error){toast(error.message);}
+  };
+  window.addEventListener('storage',e=>{
+    if(e.key===passwordKey||e.key===null){endEditing();toast('비밀번호 설정이 바뀌었습니다. 다시 로그인해 주세요.');}
+  });
   $('#add-project').onclick=()=>editor('project');$('#add-folder').onclick=()=>editor('folder');
   $('#search').addEventListener('input',render);$('#sort').onchange=render;
   $('#grid-view').onclick=()=>{list=false;$('#grid-view').setAttribute('aria-pressed','true');$('#list-view').setAttribute('aria-pressed','false');render();};
